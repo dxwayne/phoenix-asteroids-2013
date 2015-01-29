@@ -1,0 +1,197 @@
+#!/usr/bin/env python
+
+
+#############################################################################
+# cvs2tex - put a wrapper around a csv file.
+#############################################################################
+import os
+import re
+import sys
+import optparse
+
+
+__doc__ = """
+cvs2tex -c "Asteroid 6 Hebe" -t "Date & Ra & Dec" hebe_csv2report_results.csv
+
+-c  <str>               caption for the title of the table
+-d --delimiter  <str>   provide ',' and we make all ',' into '&' use the word 'tab' and
+                        we convert to a tab-character for you. (easier to type tab)
+-f --fmt       <str>    Supply a '|r|l|l|l|c|l|l|' format. We take your word it matches.
+-o --outout    <bool>   use stdout for the .tex output file
+-s --separator <str>    default '|' use as fmt separator.
+-t --top       <str>    Supply a 'coldesc & coldesc ... & coldesc ' matching your cols.
+
+-v --verboseflag <bool> be chatty to stderr, handy to let one pass fail and tell
+                        you the colcount to use to make your header, etc.
+
+
+Open the csv file; read one line; determine the table format
+from count of delimiters in the file. Produce a single .tex
+file with a landscape longtable wrapped around lines that
+follow the rules for a .TeX table body. 
+
+   $Revision$
+   $Log$
+
+"""
+__author__  = 'Wayne Green'
+__version__ = '0.1'
+
+#####  FIX THE TeX stuff, 
+
+##############################################################################
+# texprolog - prepend a .TeX file prolog to output
+#
+##############################################################################
+def texprolog(outfile,line,caption="cvs2tex table",header=[],fmt=None,sep=None,portrait=False):
+   """Given a representative first line, Add a preamble for a landscape longtable"""
+   parts = line.split('&')
+   colcount = len(parts)
+   msg = ""
+   if(colcount <= 1):
+      msg += "texprolog: wrong count of delimiters. Found %d" % colcount
+      return None
+
+   if(len(header) == 0 or len(header) != colcount):
+      header = [' ' for p in parts]  # match the header col count
+
+   headerline = ' & '.join(header)
+   if('\\\\' not in headerline):
+      headerline  += '\\\\'
+   if(fmt == None):
+      rawfmt = [ ' l ' for p in parts]
+      fmt    = sep + sep.join(rawfmt) + sep
+   pstart = ""
+   if(portrait == "True"):
+      pstart = "\\begin{landscape}\n"
+
+   print >>outfile,"""\\documentclass[letter,11pt,oneside]{article}
+
+\\usepackage{lscape}              %% landscape for tables.
+\\usepackage{longtable}           %% permit tables to span pages wg-longtable
+\\begin{document}
+
+%s
+\\begin{longtable}{%s}
+\\caption[%s (cont)]{%s} \\\\
+\\hline
+%s
+\\hline
+\\endfirsthead
+
+\\caption[%s (cont)]{%s} \\\\
+\\hline
+%s
+\\hline
+\\endhead
+
+\\hline
+\\multicolumn{%d}{r}{Continued\\ldots}
+\\endfoot
+
+\\hline
+\\endlastfoot""" % (pstart,fmt,caption,caption,headerline,caption,caption,headerline,colcount)
+   print >>outfile,"%s \\\\" % line
+   return None
+
+##############################################################################
+# texepilog -- Complete of the TeX document.
+#
+##############################################################################
+def texepilog(outfile,portrait=False):
+   """Add tail end of a tex file"""
+
+   pend = ""
+   if(portrait == "True"):
+      pend   = "\\end{landscape}\n"
+
+   print >>outfile,"""\\end{longtable}
+%s
+\\end{document}""" % pend
+
+##############################################################################
+#                                  Main
+#
+##############################################################################
+if(__name__ == "__main__"):
+   #import optparse
+
+   opts = optparse.OptionParser(usage="%prog"+__doc__)
+
+
+   opts.add_option("-c", "--caption",    action="store", dest="caption",
+                   default="",
+                   help="<str>        text for caption")
+
+   opts.add_option("-d", "--delimiter",    action="store", dest="delimiter",
+                   default=None,
+                   help="<str>        translate the string to '&'")
+
+
+   opts.add_option("-f", "--fmt",    action="store", dest="fmt",
+                   default=None,
+                   help="<bool>        image of the table format string '|l|...'.")
+
+   opts.add_option("-o", "--stdout",    action="store_true", dest="usestdout",
+                   default=False,
+                   help="<bool>        use stdout instead of making outputfile")
+
+   opts.add_option("-p", "--portrait",    action="store_true", dest="portraitflag",
+                   default=False,
+                   help="<bool>        use 'protrait' mode.")
+
+   opts.add_option("-s", "--separator",    action="store", dest="sep",
+                   default='|',
+                   help="<bool>        if -f not supplied; the column separator to use default='|'")
+
+   opts.add_option("-t", "--top",    action="store", dest="header",
+                   default="",
+                   help="<str>         h & h & ... & h to match the csv file.")
+
+   opts.add_option("-v", "--verboseflag",    action="store_true", dest="verboseflag",
+                   default=False,
+                   help="<bool>        be chatty about work on stderr.")
+
+
+   (options, args) = opts.parse_args()
+
+   rawheader = options.header
+   header    = rawheader.split('&')
+   fmt       = options.fmt
+   sep       = options.sep
+   delimiter = options.delimiter
+   if(delimiter != None):
+      if(delimiter == 'tab'):
+         delimiter = '\t'
+      translate_delimiter = True
+
+   for filename in args:
+      if(not os.path.exists(filename)):
+         print >>sys.stderr,"Unable to find file '%s', skipping." % filename
+         continue
+
+      parts = filename.split('.')
+      newname = ".".join(parts[:-1]) + ".tex"
+
+      f = open(filename,'r')           # grab one line to make the 
+      first = True
+      out = open(newname,'w')
+      if(options.verboseflag):
+         print >>sys.stderr,"Using outputfile |%s|" % newname
+      for l in f:
+         l = l.strip()
+         if(translate_delimiter):      # given some delimiter (hint tab) 
+            lparts = l.split(delimiter)
+            l = '&'.join(lparts)
+         if(first == True):
+            #out = open(newname,"w")
+            parts = l.split('&')       # remember 'picket fence' problem
+            colcount = len(parts)
+            if(options.verboseflag):
+               print >>sys.stderr,"Column Count:", colcount
+            texprolog(out,l,options.caption,header,fmt,sep,options.portraitflag)  # use line, dont do anything
+            first = False
+         print >>out,l," \\\\"
+      texepilog(out,options.portraitflag)
+      out.close()
+      f.close()

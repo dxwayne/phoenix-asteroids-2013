@@ -1,0 +1,155 @@
+#!/usr/bin/expect -f
+
+#############################################################################
+# expect2 An expect script to get the horizons ephemeris.
+# Hacked to access minor planet data for BASS SSP program
+# If there is an error, follow along a regular telnet session.
+#
+#
+# Example BASS SSP format for reading in the command line arguments
+# Note: the semi-colon at end of the body designation means use small-body table
+#    1 is Mercury 1; is Ceres
+#    the first date has midnight UT as time. This is about 6p local time Boulder.
+#    463 is SBO's JPL Observatxbor code.
+#    1results.txt is where to this script diverts the output.
+#
+# Example input line times, position and results are not hardwired.
+# ./expect2 "1996 FO3;" "2013-06-13  00:00" "2013-10-31" "1h" 463 
+#
+# 2013-06-14T10:46:18-0600 wlg
+#############################################################################
+#strace 2
+# these are basic parameters for vector query
+
+set filesuffix {_results.txt}
+
+set targetid  [lindex $argv 0]
+set starttime [lindex $argv 1]
+set endtime   [lindex $argv 2]
+set stepsize  [lindex $argv 3]
+set center    [lindex $argv 4]
+set fileprefix [ regsub -all {[ ]+} $targetid {_} ]
+set filename  "$fileprefix$filesuffix"
+set targetid  "$targetid;"
+
+
+# The 'o' observer quantites require quite a few answers
+# these were hammered out using telnet interface directly.
+
+# random notes:
+# the \r in the script is needed to send command to JPL
+# elevation cutoff means the thing is at/above the horizon.
+# daytime lets us tell roughly when the object may be observed
+# get the astrometric and apparent ra, apparent az/el, local sidereal
+# time, observer range (repress rate), and the apparent hour angle.
+# 2,4,7,20,42
+set center            463
+set tablequantities   {[2,4,7,20,42]}
+set tzcorrection      {0:00}
+set timeformat        {BOTH}
+set timedigits        {SEC}
+#set raformat          {DEG}
+set raformat          {HMS}
+set highprecision     {NO}
+set apparent          {Refracted}
+set range             {KM}
+set suppressrangerate {YES}
+set minimumelevation  "-90"
+# no airmass -38.0
+set maximumairmass    {38}
+set risetransitset    {N}
+set skipdaylight      {Y}
+set solarcutoff       {[0,180]}
+set localhourangle    {[0-12]}
+set usecsv            {Y}
+
+
+# Debug the script, echo back to the output the current values used.
+puts "targetid          $targetid          "
+puts "starttime         $starttime         "
+puts "endtime           $endtime           "
+puts "stepsize          $stepsize          "
+puts "center            $center            "
+puts "filename          $filename          "
+
+puts "tablequantities   $tablequantities   "
+puts "tzcorrection      $tzcorrection      "
+puts "timeformat        $timeformat        "
+puts "timedigits        $timedigits        "
+puts "raformat          $raformat          "
+puts "highprecision     $highprecision     "
+puts "apparent          $apparent          "
+puts "range             $range             "
+puts "suppressrangerate $suppressrangerate "
+puts "minimumelevation  $minimumelevation   "
+puts "maximumairmass    $maximumairmass    "
+puts "risetransitset    $risetransitset    "
+puts "skipdaylight      $skipdaylight      "
+puts "solarcutoff       $solarcutoff       "
+puts "localhourangle    $localhourangle    "
+puts "usecsv            $usecsv            "
+
+
+#############################################################################
+# BODY OF THE MAIN/ORIGINAL SCRIPT
+#############################################################################
+#long timeout required to generate large requests
+set timeout 300
+
+# termid v102 was suggested by startup text from session
+set    env(TERM) vt102
+
+# make the connection to JPL
+spawn  telnet -n telnet1 ssd.jpl.nasa.gov 6775
+
+# ./expect2 "1996 FO3;" "2013-06-13  00:00" "2013-10-31" "1h" 463 "1996_FO3_results.txt"
+# wait for prompts : vla-1 is some parameters stored at JPL, we ignore.
+#expect "Horizons> "             { send "load vla-1\r" }
+#expect "Horizons> "                            { send --  "load sbossp1\r" }
+expect "Horizons> "                             { send --   page\r }
+expect "Horizons> "                             { send --   $targetid\r }
+
+expect {
+   -re ".*Continue.* $"      {
+         send --   \r; \
+         expect -re ".*Select.*$"                        { send --   e\r }
+       }
+   -re ".*Select.*$"                        { send --   e\r }
+}
+#expect -re ".*Continue.* $"                     { send --   \r}
+#expect -re ".*Select.*$"                        { send --   e\r }
+expect -re ".*Observe.*$"                       { send --   o\r }
+expect -re ".*Coordinate.*$"                    { send --   $center\r }
+expect -re ".*Confirm selected station.*$"      { send --   y\r}
+expect -re ".*Starting.*$"                      { send --   $starttime\r }
+expect -re ".*Ending.*$"                        { send --   $endtime\r }
+expect -re ".*interval.*$"                      { send --   $stepsize\r }
+expect -re ".*Accept default output.*$"         { send --   n\r }
+expect -re ".*Select table quantities.*$"       { send --   $tablequantities\r }
+expect -re ".*reference.*$"                     { send --   J2000\r }
+expect -re ".*Time-zone correction.*$"          { send --   $tzcorrection\r}
+expect -re ".*Output UT time format.*$"         { send --   $timeformat\r }
+expect -re ".*Output time digits.*$"            { send --   $timedigits\r }
+expect -re ".*Output.*format.*$"                { send --   $raformat\r }
+expect -re ".*Output high precision.*$"         { send --   $highprecision\r }
+expect -re ".*Output APPARENT.*$"               { send --   $apparent\r }
+expect -re ".*Set units for RANGE output.*$"    { send --   $range\r }
+expect -re ".*Suppress RANGE_RATE output.*$"    { send --   $suppressrangerate\r }
+expect -re ".*Minimum elevation.*$"             { send --   $minimumelevation\r }
+expect -re ".*Maximum air-mass.*$"              { send --   $maximumairmass\r }
+expect -re ".*Print rise-transit-set only.*$"   { send --   $risetransitset\r }
+expect -re ".*Skip printout during daylight.*$" { send --   $skipdaylight\r }
+expect -re ".*Solar elongation cut-off.*$"      { send --   $solarcutoff\r }
+expect -re ".*Local Hour Angle cut-off.*$"      { send --   $localhourangle\r }
+expect -re ".*Spreadsheet CSV format.*$"        { send --   yes\r }
+
+
+set outf $filename
+log_file -noappend "$outf"
+expect -re ".*>>> Select.*:" { send   "q\r" }
+send_user "\n"
+log_file
+
+exit 0
+
+

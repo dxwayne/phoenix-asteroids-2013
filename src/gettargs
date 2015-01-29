@@ -1,0 +1,12 @@
+#!/bin/bash 
+#"1" \
+# ./expect2 <list of asteroids>"24" "2013-06-13  00:00" "2013-10-31" "1h" 463 
+# get the date for today through tomorrow in 
+for asteroid in `cat $1` ; do 
+   a=${asteroid/_/ };
+   today=`date --date="today" +"%Y-%m-%d"`
+   tomorrow=`date --date="tomorrow" +"%Y-%m-%d"`
+   jplexpect "$a" \""$today"" 00:00"\" \""$tomorrow"\" "10m" 463 ;
+   echo code $?;  # error status
+   if [ "$?" != "0" ]; then exit 1; fi;
+done

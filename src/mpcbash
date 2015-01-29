@@ -1,0 +1,23 @@
+#!/bin/bash
+
+##############################################################################
+# mpcbash asteroid [count of records] 
+#
+##############################################################################
+startdate=`date --date=today +"%Y-%m-%d"`
+
+if [ "$1" == "" ]; then
+   echo mpcbash asterpod [count of records];
+   echo "  " from $startdate do [count of records] for asteroid. ;
+   exit 1;
+fi
+
+rcount=$2
+if [ "$2" == "" ]; then rcount=1440; fi  # 10 days
+
+wget -O "$1_mpcresults.html" "http://scully.cfa.harvard.edu/cgi-bin/mpeph2.cgi?ty=e&d=$startdate&l=$rcount&i=10&u=m&uto=0&c=463&long=&lat=&alt=&raty=a&s=c&m=s&adir=N&oed=&e=-2&tit=&bu=&res=n&ch=c&ce=f&js=f&igd=y&ibh=y&TextArea=$1"
+if [ "$?" == "0" ]; then
+   html2text -width 200 -o "$1_mpcresults.txt" "$1_mpcresults.html"  >/dev/null 2>&1
+fi
+rm "$1_mpcresults.html"
+

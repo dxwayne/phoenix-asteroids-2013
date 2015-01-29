@@ -1,0 +1,731 @@
+#!/usr/bin/env python
+
+#############################################################################
+#  /home/astro/clones/sop/AsteroidData/cooked/csvreport.py
+#############################################################################
+import optparse
+import os
+import re
+import sys
+
+__doc__ = """
+
+[options] files...
+
+   -c --column      <str>    '<col;func;fmt>'  (see built-in funcs below)
+   -d --delimiter   <str>    default ','  (use '&' for TeX)
+   -l --label           NOT IMPLEMENTED
+   -o --omit        <str>    'col[,col...]'
+   -s --start       <regexp> time to start (JPL)  default all lines
+   -e --end         <regexp> time to end   (JPL)  default all lines
+   -a --after       <regexp> accept lines after this regexp
+   -q --quit        <regexp> quit accepting lines at this regexp
+   -r --rest        <bool>   append columns left after -c and -o
+   -v --verboseflag <bool>   be chatty
+   --jpl            <str>    '[2,4,7,20,42]' jpl columns
+
+
+In order to make output pretty, some builtin functions are supplied.
+
+   fmt_ra    simple hh mm ss.s into hh:mm:ss.s sexadecimal format
+   fmt_dec   simple [+-]dd mm ss[.s] into sdd:mm:ss.s sexadecimal format
+   fmt_dsra  simple JPL ra as ddd.fffffff convert to sexadecimal.
+   fmt_sdra  convert sexa hh mm ss.s into degrees hh:mm:ss hh.fffff
+   fmt_date  Given JPL human date in form '2013-Jun-13 00:00:00'
+             convert to my date convention ddMMMyyyy.
+   fmt_time  convert JPL human time into our time.
+   fmt_datetime convert single JPL column into ddMMyyyy and hh:mm:ss.ffff
+
+The program is designed to take JPL, MPC, APASS, and other CSV data
+and make a decent report for you.
+
+You have a line, you know the order/meaning of the fields. They are
+either in acceptable format (JD) or not (JPL RA DEC); They are in
+proper order or in case of APASS not.
+
+You supply a series of -c switches on the command line in the order
+you want the output. You may optionally apply a built-in function to
+work on a known field. You may optionally supply a python (C-like)
+format statement for the output field.  Put a -r to print the
+'left-over' fields at the end.
+
+The -c switch uses the semi-colon to separate column number; function
+to use; format to use. You can omit (no semi colons) the function and
+format. If you want a format, but no function use two semi-colons
+together. -c '3;;%-20s' for example
+
+-c --column '3,<function>[,%12s]' convert column 3 of csv file as ra in degrees optional
+                            actual supplied fmt field.
+   -c '3,,%12s' will simply apply format (columns spacing, justification) to text.
+   for a bad function name, a message will be printed.
+
+JPL files have some bother at the top and bottom of the file.  They
+deliniate the csv part with a line containing '$$SOE' for Start of
+Ephemerides and end the section with '$$EOE' for End of Ephemerides.
+
+You may use other regular expressions to trigger the start and the end
+dates. The -s '2013-(Jun|Jul|Aug)' and -e '2013-(Oct|Nov|Dec)-1' will
+start for any of summer months; and end for any of Fall months through
+19-Dec. OK any REGEXP you mostly like.
+
+All blank lines are skipped. All lines without commas are skipped
+(dangerous, but have to deal with data omitted due to
+sun,horizon,airmass and other constraints.
+
+Skip lines (-a 'REGEXP') until after some beginning regular expression
+pattern is found.
+
+Quit processing lines (-q 'REGEXP') when quitting regular expression
+pattern is found.
+
+Change the default delimiter from ',' (we produce another csv for you
+by default) to '&' if you are anglingt to make yourself a .TeX table.
+
+
+Summary:
+
+The JPL data has a header, the ephemerides within a block of lines set
+off with $$SOE through $$EOE.  The problem is that we want a report
+that has a subset of times and a subset of columns.
+
+The other problem is there are lines that are blank or non conforming
+where cut-off conditions may have triggered.
+
+Thus all lines without commas are skipped, all essentially blank lines
+are skipped.
+
+Each line is split into an array. The -c command allows a column to be
+appended to the display.
+
+If --raw is used; only a comma separated list is output from the
+pipe. Otherwise a default format of %s is used. You can use a "%s &"
+to make a tex like table.
+
+The command -c '0,,%s &' will not apply a format function but output
+the first column and an ampersand for TeX directly to the output pipe.
+
+Example commands:
+
+Put the time on left and right column; and only use the ra/dec in sexadecimal
+cut/paste format.
+-c '0,time,"%-12s &"'    # use the time part for a TeX output right justified
+-c '5,ra'                # date, sexa ra, sesa dec, date
+-c '6,sdec'
+-c '0,time,"%12s &"'     # use the time part for a TeX output right justified
+
+APASS data needs the order changed: -o [0,2,*]
+JPL - well the options need some cleaning or dropping as you like.
+MPC - headers to skip, value to reformat to taste.
+
+/home/astro/clones/sop/AsteroidData/cooked/cvs2report.py
+
+"""
+__author__  = 'Wayne Green'
+__version__ = '0.1'
+
+__jpldate__  = re.compile(r'([12][0-9]{3,3})-([a-zA-Z]+)-([0-9]{,3}) ([0-9+]+):([0-9+]+):([0-9.]+)')
+__jpldate2__ = re.compile(r'([12][0-9]{3,3})-([a-zA-Z]+)-([0-9]{,3}) ([0-9+]+):([0-9+]+)')
+__degtest__  = re.compile(r'[0-9+-]+.[0-9]+')
+__sign__     = re.compile(r'[+-]')
+__int__      = re.compile(r'[0-9]+')
+__jpllist__  = re.compile(r'[[]([0-9, ]+) [\]]') # tolerate spaces
+
+__debugflag__ = False
+
+#############################################################################
+# jpl_headers Some numbers produce more than one column. If a '|' in h[0]
+# split for both header text strings.
+#############################################################################
+jpl_headers = { # key [header(s), long explaination]
+1    : [ 'ARA|ADEC'                                ,  'Astrometric RA \& DEC'                   ],
+2    : [ 'RA|Dec'                                  ,  'Apparent RA \& DEC'                      ],
+3    : [ '$\Delta$RA(cos(dec)|$\Delta$Dec) '       ,  'Rates; RA \& DEC'                        ],
+4    : [ 'Az|El'                                   ,  'Apparent AZ \& EL'                       ],
+5    : [ '$\Delta$Az|El'                           ,  'Rates; AZ \& EL'                         ],
+6    : [ 'XY|$\alpha$'                             ,  'Satellite X \& Y pos. angle'             ],
+7    : [ 'LAST'                                    ,  'Local apparent sidereal time'            ],
+8    : [ 'AirMass'                                 ,  'Airmass'                                 ],
+9    : [ '$M_{v}$|Surface Brightness'              ,  'Visual mag. \& Surface Brght'            ],
+10   : [ 'Ill\%'                                   ,  'Illuminated fraction'                    ],
+11   : [ 'Defect Ill'                              ,  'Defect of illumination'                  ],
+12   : [ 'Ang Sep'                                 ,  'Satellite anglular separ/vis.'           ],
+13   : [ 'Targ Ang Dia'                            ,  'Target angular diameter'                 ],
+14   : [ '$O_{\lambda}$|$O_{\phi}$'                ,  'Observer sub-lon \& sub-lat'             ],
+15   : [ 'Sun sub-long|Sun sub-lat'                ,  'Sun sub-longitude \& sub-latitude'       ],
+16   : [ 'Sun sub-PA|Sun sub-distance'             ,  'Sub-Sun position angle \& distance'      ],
+17   : [ 'NP Pa|Dist'                              ,  'North Pole position angle \& distance'   ],
+18   : [ '$\lambda_{odot}$|$\phi_{odot}$'          ,  'Heliocentric ecliptic lon. \& lat.'      ],
+19   : [ '$\r_{odot}$|$\Delta$ r'                  ,  'Heliocentric range \& range-rate'        ],
+20   : [ '$r_{obs}$|$\Delta\;r_{obs}$'             ,  'Observer range \& range-rate'            ],
+21   : [ 'OWLT'                                    ,  'One-way (down-leg) light-time'           ],
+22   : [ '$ASpeed_{odot}$|$ASpeed_{obs}$'          ,  'Speed wrt Sun \& observer'               ],
+23   : [ 'ELONG'                                   ,  'Sun-Observer-Target ELONG angle'         ],
+24   : [ 'PHASE'                                   ,  'Sun-Target-Observer PHASE angle'         ],
+25   : [ 'TOIB|IB\%Ill'                            ,  'Target-Observer-IB / IB\_Illum\%'        ],
+26   : [ 'OPT angle'                               ,  'Observer-Primary-Target angle'           ],
+27   : [ 'ST Pos Angle radius|ST Pos Angle vel'    ,  'Sun-Target pos. angle; radius \& -vel.'  ],
+28   : [ 'Orbit plane angle'                       ,  'Orbit plane angle'                       ],
+29   : [ 'Con ID'                                  ,  'Constellation ID'                        ],
+30   : [ 'Delta-T (CT - UT)'                       ,  'Delta-T (CT - UT)'                       ],
+31   : [ '$Ecliptic_{\lambda}$|$Ecliptic_{\phi}$'  ,  'Observer ecliptic lon. \& lat.'          ],
+32   : [ 'NP RA|NP Dec'                            ,  'North pole RA \& DEC'                    ],
+33   : [ '$Galactic l$|$Galactic b$'             ,  'Galactic longitude \& latitude'          ],
+34   : [ 'LA Solar time'                           ,  'Local apparent SOLAR time'               ],
+35   : [ 'E-O LT'                                  ,  'Earth->obs. site light-time'             ],
+36   : [ '$RA_{\Delta}$|$Dec_{\Delta}$'            ,  'RA \& DEC uncertainty'                   ],
+37   : [ 'Plane-of-sky Error'                      ,  'Plane-of-sky error ellipse'              ],
+38   : [ 'RSS '                                    ,  'POS uncertainty (RSS)'                   ],
+39   : [ '3$\sigma$Range|3$\sigma$Rate'            ,  'Range \& range-rate 3-sigmas'            ],
+40   : [ '3$\sigma$ Doppler|3$\sigma$ delay'       ,  'Doppler \& delay 3-sigmas'               ],
+41   : [ 'True anomaly angle'                      ,  'True anomaly angle'                      ],
+42   : [ 'LHA'                                     ,  'Local apparent hour angle'               ]
+}
+
+##############################################################################
+# fmt_ra - given the simple sexa ra field: return one with the colons.
+#- checked
+##############################################################################
+def fmt_ra(instr,fmt="%s"):
+   """simple hh mm ss.s into hh:mm:ss.s sexadecimal format"""
+   if(__debugflag__): print "fmt_ra ",
+   rawparts = instr.strip().split(' ')
+   parts = map(str.strip,rawparts)
+   parts = map(lambda a: ['','0'][len(a) == 1]+a, parts) # no single digit values
+   ret = ':'.join(parts)
+   return fmt % ret
+# fmt_ra '02:12:45.7' instr = " 02 12 45.7 "; fmt_ra(instr,"RA = %s")
+
+##############################################################################
+# fmt_dec - given a simple dec field: return one with the colons
+#- checked
+##############################################################################
+def fmt_dec(instr,fmt="%s"):
+   """simple [+-]dd mm ss[.s] into sdd:mm:ss.s sexadecimal format"""
+   if(__debugflag__): print "fmt_dec ",
+   rawparts = instr.strip().split(' ')
+   parts = map(str.strip,rawparts)
+   sign = ''
+   expr = parts
+   if(__sign__.match(parts[0])):
+      sign = parts[0][0]
+      expr = [parts[0][1:]]+parts[1:]
+   expr = map(lambda a: ['','0'][len(a) == 1]+a, expr)
+   ret = sign+':'.join(expr)
+   return ret
+# fmt_ra instr=" +3 23 45.7" ; fmt_dec(instr,"DEC = %-7s")
+
+##############################################################################
+# fmt_dsra - given a ra field in degrees: convert to sexa
+#   RA degrees always positive.
+#- checked
+##############################################################################
+def fmt_dsra(instr,fmt="%s"):
+   """simple JPL ra as ddd.fffffff convert to sexadecimal. """
+   if(__debugflag__): print "fmt_dsra ",
+   rawparts = instr.strip().split(' ')
+   ret = "Bad dsra: |%s|" % instr
+   parts = map(float,rawparts)
+   minutes = parts[0]/60.0
+   degrees = int(parts[0])
+   minutes = minutes - int(minutes)
+   seconds = minutes / 60.0
+   minutes = int(minutes)
+   wholeseconds = int(seconds)
+   fracseconds = ("%4.3f" % (seconds - wholeseconds)).split('.')[1]
+   fmtparts = map(lambda a: ['0',''][len(a) != 1]+a,
+      ["%d" % degrees , "%d" % minutes , "%d" % wholeseconds ,"%s" % fracseconds] )
+   res = "%s:%s:%s.%s" % tuple(fmtparts)
+   ret = fmt % res # allow fmt of '%12s' to allow padding etc.
+   return ret
+# fmt_dsra instr=" 02 12 45.7 " ; fmt_dsra(instr) = '02:00:00.001'
+
+##############################################################################
+# fmt_sdra - given a jpl sexa result; convert ra to degrees.
+#- checked
+##############################################################################
+def fmt_sdra(instr,fmt="%f"):
+   """convert sexa hh mm ss.s into degrees"""
+   if(__debugflag__): print "fmt_sdra ",
+   rawparts = instr.strip().split(' ')
+   parts = map(float,rawparts)
+   ret = fmt % (((parts[0]) + ((parts[1]/60.0) + parts[1])/ 60.0) * 15.0)
+   return ret
+# fmt_sdra instr = " 05 23 24.8 "; fmt_sdra(instr); fmt_sdra(instr,'RA= %5.3f');
+
+##############################################################################
+# fmt_dsdec - given declination as degrees.fraction convert to sexa
+#- checked
+##############################################################################
+def fmt_dsdec(instr,fmt='%s'):
+   """convert dd mm ss.s into dd:mm:ss.s format hh:mm:ss hh.fffff"""
+   if(__debugflag__): print "fmt_dsdec ",
+   rawparts = instr.strip().split(' ')
+   ret = "fmt_dsdec bad string |%s|" % instr
+   parts = map(float,rawparts)
+   sign  = '+'
+   if(__sign__.match(rawparts[0])):
+      sign=[1,-1]['-' in parts[0]]
+      parts = parts[1:]
+   if(len(parts) == 1):
+      degrees = int(parts[0])
+      frac = parts[0] - degrees
+      minutes = frac * 60.0
+      sec = "%2.4f" % ((minutes-int(minutes)) / 60.0)
+      parts = sec.split('.')
+      if(len(parts[0]) == 1):
+         sec = '0'+sec
+      minutes = "%s" % int(minutes)
+      if(len(minutes) == 1):
+         minutes = '0'+minutesg[2],g[1],g[0]
+      ret = ':'.join(map(lambda a: "%s" % a, [degrees,minutes,sec]))
+   return fmt % retg[2],g[1],g[0]
+
+# fmt_dsdec instr=' 12.123456'; fmt_dsdec(instr) ; fmt_dsdec(instr,'DEC=%12s')
+
+##############################################################################
+# fmt_date - checked
+#
+##############################################################################
+def fmt_date(instr,fmt='%s'):
+   """Given JPL human date in form '2013-Jun-13 00:00:00' convert to our date
+  ddMMMyyyy."""
+   if(__debugflag__): print "fmt_date ",
+   ret = "fmt_date bad string |%s|" % instr
+   m = __jpldate__.match(instr)
+   if(m and len(m.groups()) == 6):
+      g = m.groups()
+      ret = "%s%s%s" % (g[2],g[1],g[0])
+   else:
+      m2 = __jpldate2__.match(instr)
+      g = m2.groups()
+      if(m2 and len(m2.groups()) == 5):
+         ret = "%s%s%s" % (g[2],g[1],g[0])
+   return fmt % ret
+# fmt_date instr="2013-Jun-13 00:00:00" ;  fmt_date(instr,' DATE=%s')
+
+##############################################################################
+# fmt_time - checked
+#
+##############################################################################
+def fmt_time(instr,fmt='%s'):
+   """convert JPL human time into our time."""
+   if(__debugflag__): print "fmt_time ",
+   m = __jpldate__.match(instr)
+   ret = "fmt_time bad string |%s|" % instr
+   if(m and len(m.groups()) == 6):
+      g = m.groups()
+      ret = ":".join(g[3:])
+   else:
+      m2 = __jpldate2__.match(instr)
+      g = m2.groups()
+      if(m2 and len(m2.groups()) == 5):
+         ret = ":".join(g[3:])
+   return fmt % ret
+# fmt_time instr="2013-Jun-13 00:00:00.12345" ;  fmt_time(instr,' TIME=%s')
+
+##############################################################################
+# fmt_datetime - checked
+#
+##############################################################################
+def fmt_datetime(instr,fmt='%s'):
+   """convert JPL human time into our time."""
+   if(__debugflag__): print "fmt_datetime ",instr,
+   m = __jpldate__.match(instr)
+   ret = "fmt_time bad string |%s|" % instr
+   if(m and len(m.groups()) == 6):
+      g = m.groups()
+      ret = "%s%s%s" % (g[2],g[1],g[0]) + ":".join(g[3:])
+   else:
+      m2 = __jpldate2__.match(instr)
+      g = m2.groups()
+      if(m2 and len(m2.groups()) == 5):
+         ret = "%s%s%s " % (g[2],g[1],g[0]) + ":".join(g[3:])
+   return fmt % ret
+# fmt_datetime instr="2013-Jun-13 00:00:00.12345" ;  fmt_time(instr,' TIME=%s')
+
+##############################################################################
+# class MPC - Given a MPC file with our wget criteria; assimilate and
+# produce report
+#
+# ./csvreport --MPC mpc_report_test.txt
+##############################################################################
+class MPC:
+   """Process a MPC ephemeris - ignore all the positin switches; dish it out
+as we can for now. 2013-07-15T11:52:13-0600
+
+Date       UT      R.A. (J2000) Decl.    Delta     r     El.    Ph.   V     Coord Motion       Object    Sun   Moon                Uncertainty info
+            h m s                                                            "/sec    "/sec   Azi. Alt.  Alt.  Phase Dist. Alt.    3-sig/" P.A.
+... Suppressed ...
+2013 07 15 023000 15 44 20.2 -01 19 15   1.974   2.631  119.8  19.6  10.2   -0.001   -0.005   164  +48   -01   0.39   048  +32       N/A   N/A / Map / Offsets
+0    1  2  3      4  5  6     7  8  9    10      1      12     13    14     15       16       17   18     19   20     21   22
+
+"""
+   __MPCTrigger__ = re.compile(r'h m s')
+   __MPCEnd__     = re.compile(r'^2[0-9]{3,3}')
+   __months__ = ['','Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'] # ones based lookup
+
+   def __init__(self,filename,options):
+      """Given the filename, process the ephemeris"""
+      self.ephemeris = []
+      f = open(filename,'r')
+      if(f):
+         start = False
+         for l in f:
+            l = l.strip()
+            if(not start and MPC.__MPCTrigger__.search(l)):
+               if(__debugflag__): print "MPC triggered on line |%s|" % l
+               start = True
+               break
+
+         for l in f:
+            if(__debugflag__): print "MPC Line |%s|" % l
+            l = l.strip()
+            if('Suppressed' in l):
+               continue
+            if(not MPC.__MPCEnd__.match(l)):
+               if(__debugflag__): print "MPC end triggered |%s|" % l
+               break
+            parts = l.split()
+            if(len(parts) > 15):
+               try:
+                  date = parts[2] + MPC.__months__[int(parts[1])] + parts[0]
+                  time = parts[3][0:2] + ':' + parts[3][2:4] + ':' + parts[3][4:6]
+                  ra   = parts[4] + ":" + parts[5] + ":" + parts[6]
+                  dec  = parts[7] + ":" + parts[8] + ":" + parts[9]
+                  mag  = parts[14]
+                  self.ephemeris.append([date+" "+time,ra,dec,mag])
+               except:
+                  print "MPC Bad Parts",parts
+                  raise
+            elif(__debugflag__): print "MPC line parts too small |%s| %d" % (l,len(parts))
+
+      else:
+         raise Exception("MPC: Unable to open file %s" % filename)
+
+   def TeX(self,delimiter='&',startre=None,endre=None):
+      """Given the start and end REGEXPs excerpt the TeX/CSV table"""
+      ret = ""
+      if(__debugflag__): print "MPC delimiter |%s|" % delimiter,"startre |%s|" % startre, "endre |%s|" % endre
+      if(startre):
+         if(__debugflag__): print "MPC using startre"
+         for a in self.ephemeris:
+            print "MPC a",a
+            start = False
+            if(endre):
+               if(__debugflag__): print "MPC using start/endre"
+               if(endre.match(a[0]+' '+a[1])):
+                  break
+            if(startre.match(a[0]+' '+a[1])):  # date and time considered
+               ret += ' & '.join(a)+'\n'  # + '\\\\'+'\n'
+               start = True
+      elif(endre):
+         if(__debugflag__): print "MPC using just endre"
+         for a in self.ephemeris:
+            if(endre):
+               if(endre.match(a[0]+' '+a[1])):
+                  break
+            ret += ' & '.join(a)+'\n'  # + '\\\\'+'\n'
+      else:
+         if(__debugflag__): print "MPC using neither start/endre"
+         for a in self.ephemeris:
+            ret += ' & '.join(a)+'\n'  # + ' \\\\'+'\n'
+      #print ret
+      return ret
+
+# class MPC
+
+
+##############################################################################
+# class JPL
+# ./cvs2report2 --JPL '0;fmt_datetime;%20s' -c '3;fmt_ra;%12s' -c '4;fmt_dec' jpl_report_test.txt -v | less
+##############################################################################
+class JPL:
+   """Given a JPL Horizon's file prepare report"""
+
+   def __init__(self,filename,options):
+      """Given the filename and options; produce an array of values ready to work with."""
+      self.labels       = {}
+      self.columns      = {}
+
+      self.filename     = filename
+      self.delimiter    = options.delimiter              # store
+      self.startre      = options.startre                # store
+      self.endre        = options.endre                  # store
+      self.afterre      = options.afterre                # store
+      self.quitre       = options.quitre                 # store
+      self.columnargs   = options.columnargs             # append -c '<col>,[func],[fmt]'
+      self.omitcolumns  = options.omitcolumns           # append -o '<col>[,<col> ...]'
+      self.headerlabels = options.headerlabels           # append -h '<col>,TEXT STRING'
+
+      # python seems not to strip the quotes from args in some shell cases.
+      self.columnargs   = map(lambda a: [a,a[1:-1]]["'" in a or '"' in a], self.columnargs)
+      self.omitcolumns  = map(lambda a: [a,a[1:-1]]["'" in a or '"' in a], self.omitcolumns)
+      self.headerlabels = map(lambda a: [a,a[1:-1]]["'" in a or '"' in a], self.headerlabels)
+
+      ###################################################################
+      #  Get the start/end regular expressions compiled.
+      ###################################################################
+      try:
+         m = "startre: bad REGEXP: |%s| ignoring.\n" % self.startre
+         if(startre != None):
+            self.startre = re.compile(startre)
+      except:
+         self.msgs += m
+         self.startre = None                            # ignore, dont abort
+      try:
+         m = "endre:   bad REGEXP: |%s| ignoring.\n" % self.endre
+         if(endre != None):
+            self.endre = re.compile(endre)
+      except:
+         self.msgs += m
+         self.endre = None                            # ignore, dont abort
+
+      try:
+         m = "afterre: bad REGEXP: |%s| ignoring.\n" % self.afterre
+         self.afterre = re.compile(afterre)
+      except:
+         self.msgs += m
+         self.afterre = None                            # ignore, dont abort
+
+      try:
+         m = "quitre:  bad REGEXP: |%s| ignoring.\n" % self.quitre
+         if(quitre != None):
+            self.quitre = re.compile(quitre)
+      except:
+         self.msgs += m
+         self.quitre = None                             # ignore, dont abort
+
+      ###################################################################
+      #  Parse out any headers ... dictionary integer offset
+      #  and array of header text with optional format if the requisite
+      #  percent sign is in the supplied text.
+      ###################################################################
+      try:
+         n = -1
+         r = 'none'
+         for n,r in enumerate(headerlabels):
+            parts = r.split(';')
+            parts.append('')                          # add something for fmt stmt to chew on
+            i = int(parts[0])
+            fmt = ['%s',parts[2]][len(parts) > 2 and '%' in parts[2]]
+            self.labels[i] = [parts[1],fmt]
+      except:
+         self.msgs += "label parsing: bad label %d '%s' skipping.\n" % (n,r)
+
+      ###################################################################
+      #  compile  self.columnargs '[0-9]+,func[,<fmt>]
+      #
+      ###################################################################
+      try:
+         n = -1
+         r = 'none'
+         for n,r in enumerate(options.columnargs):
+            parts = r.split(';')
+            parts+= ['','']                         # add something for fmt stmt to chew on
+            i = int(parts[0])
+            fmt = ['%s',parts[2]][len(parts) > 2 and '%' in parts[2]]
+            self.columns[i] = [parts[1],fmt]
+      except:
+         self.msgs += "columnargs parsing: bad self.columnargs %d '%s' skipping.\n" % (n,r)
+
+      ###################################################################
+      #  Process the -c switches. These are the columns we want
+      #  in order
+      ###################################################################
+      self.coldict = {}
+      maxcol = False
+      mincol = False
+      try:
+         for i,val in enumerate(options.columnargs):
+            parts = val.split(';')
+            parts += ['','','']  # assure we have enough parts
+            p0 = parts[0]
+            if(__int__.match(p0)):
+               idx = int(p0)
+               if(not mincol and idx < mincol): mincol = idx
+               if(not maxcol and idx > maxcol): maxcol = idx
+               self.coldict[idx] = [parts[1],parts[2]]
+            else:
+               self.msgs += "-c argument %d was in error '%s'. Skipping\n" % (i,val)
+      except:
+         abort = True
+         self.msgs += "Error in parsing the column format options. Aborting." % (i,val)
+
+      ###################################################################
+      #  Die if we have to, report all complaints.
+      ###################################################################
+      if(abort == True):
+         raise Exception("JPL"+self.msgs)
+
+   def TeX(self):
+      """Produce the TeX/CSV report"""
+      filename = self.filename
+      coldict = self.coldict
+
+      ###################################################################
+      ###################################################################
+      #  OK! Process the file(s)
+      ###################################################################
+      for filename in args:
+         if(not os.path.exists(filename)):
+            print >>sys.stderr,"Unable to find file '%s', skipping." % filename
+            continue
+
+         # find starting line of csv data
+         f = open(filename,'r')
+         ln = 0                                       # track line number in input file
+         if(afterre):                                 # skip till match
+            for l in f:
+               ln += 1
+               if(afterre.match(l)):                  # position to start proccessing lines
+                  break
+
+         for l in f:
+            l = l.strip()
+            if(quitre):
+               if(quitre.match(l)):
+                  break;
+            if(',' not in l):
+               continue;
+            if(l == ''):
+               continue
+
+            parts = l.split(",")                      # deal with this csv line
+
+            try:
+               for k,v in self.columns.items():         # first; reformat in place
+                  parts[k] = {
+                     "fmt_ra"       : fmt_ra,
+                     "fmt_dec"      : fmt_dec,
+                     "fmt_dsra"     : fmt_dsra,
+                     "fmt_sdra"     : fmt_sdra,
+                     "fmt_date"     : fmt_date,
+                     "fmt_time"     : fmt_time,
+                     "fmt_datetime" : fmt_datetime
+                     }.get(v[0],lambda a,b: b % a)(parts[k],v[1])
+            except:
+               print >>sys.stderr,"Ooops... bad line", k,v
+               msgs += "%s:%d Bad column reformat operation." % (filename,ln)
+
+            outparts = [ field for i,field in enumerate(parts) if i in self.columns]
+            # where the output comes.
+            print self.delimiter.join(outparts)
+
+         f.close()
+
+# class JPL
+
+
+
+
+##############################################################################
+#                                 Main
+#
+##############################################################################
+if __name__ == "__main__":
+
+   opts = optparse.OptionParser(usage="%prog"+__doc__)
+
+
+   opts.add_option("--MPC",    action="store_true", dest="MPCFlag",
+                   default=False,
+                   help="<bool>        the files are from Minor Planet Center.")
+
+   opts.add_option("--JPL",    action="store_true", dest="JPLFlag",
+                   default=False,
+                   help="<bool>        the files are from JPL HORIZONS.")
+
+   # -c apply function/output format to a column(s)
+   opts.add_option("-c", "--column",    action="append", dest="columnargs",
+                   default=[],
+                   help="<append>      Append '[0-9]+,func[,<fmt>] to columnargs")
+
+   opts.add_option("-d", "--delimiter",    action="store", dest="delimiter",
+                   default=',',
+                   help="<>            delimiter to use")
+
+   opts.add_option("-l", "--labels",    action="append", dest="headerlabels",
+                   default=[],
+                   help="<append>      NOT IMPLEMENTED Append header label request -l '<col int>;my label")
+
+   opts.add_option("-o", "--omit",    action="append", dest="omitcolumns",
+                   default=[],
+                   help="<append>      omit column(s) from consideration.")
+
+   opts.add_option("--jpllist",    action="store", dest="jpllist",
+                   default=None,
+                   help="<str>         JPL list like '[2,4,7,20,42]' only columns to use; gen headers")
+
+   # specific date matcher for jpl
+   opts.add_option("-s", "--start",    action="store", dest="startre",
+                   default=None,
+                   help="<bool>        Python REGEXP for start date/time '0,^[]+2012-12-25.*07:00:00.*$' Merry XMas.")
+
+   opts.add_option("-e", "--end",    action="store", dest="endre",
+                   default=None,
+                   help="<>            Python REGEXP for end date/time '0,[]+2012-12-26.*19:00:00.*$'")
+
+   # REGEXP to match lines to -a start accepting; -q to quit accepting
+   opts.add_option("-a", "--after",    action="store", dest="afterre",
+                   default='[$]+SOE',
+                   help="<>            ignore lines until one matches REGEXP '[$]_SOE'")
+
+   opts.add_option("-q", "--quit",    action="store", dest="quitre",
+                   default='[$]+EOE',
+                   help="<>            use lines until one matches REGEXP '[$]+EOE'.")
+
+   opts.add_option("-r", "--rest",    action="store_true", dest="restflag",
+                   default=False,
+                   help="<bool>        go ahead and append 'rest' of fields.")
+
+   opts.add_option("-v", "--verboseflag",    action="store_true", dest="verboseflag",
+                   default=False,
+                   help="<bool>        be chatty about work.")
+
+
+   (options, args) = opts.parse_args()
+   msgs         = ""                             # save up error messages
+   abort        = False                          # find all fatal errors
+
+   if(not (options.JPLFlag or options.MPCFlag)):
+      msgs+= "Must specify --JPL or --MPC. All files must be from only one.\n"
+      abort = True
+   if(options.JPLFlag and options.MPCFlag):
+      msgs+= "Must specify only one flag: --JPL or --MPC. All files must be from only one.\n"
+      abort = True
+
+   if(abort):
+      print >>sys.stderr,msgs
+      sys.exit(-1)
+
+   ###################################################################
+   #  Attempt to compile all files; if all successful; then
+   #  do the report.
+   ###################################################################
+   compiles = []
+   if(options.JPLFlag):
+      for filename in args:
+         if(1): # try:
+            c = JPL(filename,options)
+            compiles.append(c)
+         #except e:
+         #   msgs += "Error with file |%s|\n%s" % (filename,e)
+         #   abort = True
+   elif(options.MPCFlag):
+      for filename in args:
+         if(1): # try:
+            c = MPC(filename,options)
+            compiles.append(c)
+         #except Exception as e:
+         #   msgs += "Error with file |%s|\n%s" % (filename,e)
+         #   abort = True
+
+   if(__debugflag__): print "Starting compiles... abort=",abort
+   if(not abort):
+      if(__debugflag__): print " for ...",len(compiles)
+      for c in compiles:
+         if(__debugflag__): print "compiling"
+         print c.TeX()
+   else:
+      print >>sys.stderr,"Error compiling files\n",msgs
+      sys.exit(-1)
