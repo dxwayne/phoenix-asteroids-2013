@@ -1,7 +1,7 @@
 #!/usr/bin/expect -f
 
 #############################################################################
-# expect2 An expect script to get the horizons ephemeris.
+# jplexpect An expect script to get the horizons ephemeris.
 # Hacked to access minor planet data for BASS SSP program
 # If there is an error, follow along a regular telnet session.
 #
@@ -14,7 +14,8 @@
 #    1results.txt is where to this script diverts the output.
 #
 # Example input line times, position and results are not hardwired.
-# ./expect2 "1996 FO3;" "2013-06-13  00:00" "2013-10-31" "1h" 463 
+#                0           1                   2           3   4
+# ./jplexpect2 "1996 FO3" "2013-06-13  00:00" "2013-10-31" "1h" 463
 #
 # 2013-06-14T10:46:18-0600 wlg
 #############################################################################
@@ -55,9 +56,9 @@ set apparent          {Refracted}
 set range             {KM}
 set suppressrangerate {YES}
 set minimumelevation  "-90"
-# no airmass -38.0
 set maximumairmass    {38}
 set risetransitset    {N}
+# no airmass -38.0
 set skipdaylight      {Y}
 set solarcutoff       {[0,180]}
 set localhourangle    {[0-12]}
@@ -102,46 +103,43 @@ set    env(TERM) vt102
 # make the connection to JPL
 spawn  telnet -n telnet1 ssd.jpl.nasa.gov 6775
 
-# ./expect2 "1996 FO3;" "2013-06-13  00:00" "2013-10-31" "1h" 463 "1996_FO3_results.txt"
-# wait for prompts : vla-1 is some parameters stored at JPL, we ignore.
-#expect "Horizons> "             { send "load vla-1\r" }
-#expect "Horizons> "                            { send --  "load sbossp1\r" }
-expect "Horizons> "                             { send --   page\r }
-expect "Horizons> "                             { send --   $targetid\r }
+# ./jplexpect "1996 FO3;" "2013-06-13  00:00" "2013-10-31" "1h" 463 "1996_FO3_results.txt"
+# wait for prompts : vla-1 is some parameters stored at JPL, we ignore.               EXAMPLE
+expect "Horizons> "                             { send --   page\r };               # page
+expect "Horizons> "                             { send --   $targetid\r };          # 1996 FO3;
 
 expect {
-   -re ".*Continue.* $"      {
+   -re ".*Continue.*$"      {
          send --   \r; \
          expect -re ".*Select.*$"                        { send --   e\r }
        }
    -re ".*Select.*$"                        { send --   e\r }
 }
-#expect -re ".*Continue.* $"                     { send --   \r}
-#expect -re ".*Select.*$"                        { send --   e\r }
-expect -re ".*Observe.*$"                       { send --   o\r }
-expect -re ".*Coordinate.*$"                    { send --   $center\r }
-expect -re ".*Confirm selected station.*$"      { send --   y\r}
-expect -re ".*Starting.*$"                      { send --   $starttime\r }
-expect -re ".*Ending.*$"                        { send --   $endtime\r }
-expect -re ".*interval.*$"                      { send --   $stepsize\r }
-expect -re ".*Accept default output.*$"         { send --   n\r }
-expect -re ".*Select table quantities.*$"       { send --   $tablequantities\r }
-expect -re ".*reference.*$"                     { send --   J2000\r }
-expect -re ".*Time-zone correction.*$"          { send --   $tzcorrection\r}
-expect -re ".*Output UT time format.*$"         { send --   $timeformat\r }
-expect -re ".*Output time digits.*$"            { send --   $timedigits\r }
-expect -re ".*Output.*format.*$"                { send --   $raformat\r }
-expect -re ".*Output high precision.*$"         { send --   $highprecision\r }
-expect -re ".*Output APPARENT.*$"               { send --   $apparent\r }
-expect -re ".*Set units for RANGE output.*$"    { send --   $range\r }
-expect -re ".*Suppress RANGE_RATE output.*$"    { send --   $suppressrangerate\r }
-expect -re ".*Minimum elevation.*$"             { send --   $minimumelevation\r }
-expect -re ".*Maximum air-mass.*$"              { send --   $maximumairmass\r }
-expect -re ".*Print rise-transit-set only.*$"   { send --   $risetransitset\r }
-expect -re ".*Skip printout during daylight.*$" { send --   $skipdaylight\r }
-expect -re ".*Solar elongation cut-off.*$"      { send --   $solarcutoff\r }
-expect -re ".*Local Hour Angle cut-off.*$"      { send --   $localhourangle\r }
-expect -re ".*Spreadsheet CSV format.*$"        { send --   yes\r }
+expect -re ".*Observe.*$"                       { send --   o\r };                  # o
+expect -re ".*Coordinate.*$"                    { send --   $center\r };            # 463
+expect -re ".*Confirm selected station.*$"      { send --   y\r};                   # y
+expect -re ".*Starting.*$"                      { send --   $starttime\r };         # 2013-06-13  00:00
+expect -re ".*Ending.*$"                        { send --   $endtime\r };           # 2013-10-31
+expect -re ".*interval.*$"                      { send --   $stepsize\r };          # 1h
+expect -re ".*Accept default output.*$"         { send --   n\r };                  # n
+expect -re ".*Select table quantities.*$"       { send --   $tablequantities\r };   # [2,4,7,20,42]
+expect -re ".*reference.*$"                     { send --   J2000\r };              # J2000
+expect -re ".*Time-zone correction.*$"          { send --   $tzcorrection\r};       # 0:00
+expect -re ".*Output UT time format.*$"         { send --   $timeformat\r };        # BOTH
+expect -re ".*Output time digits.*$"            { send --   $timedigits\r };        # SEC
+expect -re ".*Output.*format.*$"                { send --   $raformat\r };          # HMS
+expect -re ".*Output high precision.*$"         { send --   $highprecision\r };     # NO
+expect -re ".*Output APPARENT.*$"               { send --   $apparent\r };          # Refracted
+expect -re ".*Set units for RANGE output.*$"    { send --   $range\r };             # KM
+expect -re ".*Suppress RANGE_RATE output.*$"    { send --   $suppressrangerate\r }; # YES
+expect -re ".*Minimum elevation.*$"             { send --   $minimumelevation\r };  # -90
+expect -re ".*Maximum air-mass.*$"              { send --   $maximumairmass\r };    # 38
+expect -re ".*Print rise-transit-set only.*$"   { send --   $risetransitset\r };    # N
+expect -re ".*Skip printout during daylight.*$" { send --   $skipdaylight\r };      # Y
+expect -re ".*Solar elongation cut-off.*$"      { send --   $solarcutoff\r };       # [0,180]
+expect -re ".*Local Hour Angle cut-off.*$"      { send --   $localhourangle\r };    # [0-12]
+expect -re ".*RA/DC angular rate cut-off.*$"    { send --   1000\r };               # 1000
+expect -re ".*Spreadsheet CSV format.*$"        { send --   yes\r };                # Y
 
 
 set outf $filename
