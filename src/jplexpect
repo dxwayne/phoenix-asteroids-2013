@@ -5,6 +5,9 @@
 # Hacked to access minor planet data for BASS SSP program
 # If there is an error, follow along a regular telnet session.
 #
+# Some other JPL expect script examples can be found here.
+# ftp://ssd.jpl.nasa.gov/pub/ssd/SCRIPTS/
+#
 #
 # Example BASS SSP format for reading in the command line arguments
 # Note: the semi-colon at end of the body designation means use small-body table
@@ -15,12 +18,28 @@
 #
 # Example input line times, position and results are not hardwired.
 #                0           1                   2           3   4
-# ./jplexpect2 "1996 FO3" "2013-06-13  00:00" "2013-10-31" "1h" 463
+# ./jplexpect "1996 FO3" "2013-06-13  00:00" "2013-10-31" "1h" 463
 #
 # 2013-06-14T10:46:18-0600 wlg
 #############################################################################
 #strace 2
 # these are basic parameters for vector query
+
+# permit some help with just the command name, and jplexpect -h etc.
+proc jplexpect_help {} {
+   puts {usage:}
+   puts {./jplexpect "1996 FO3;" "2013-06-13  00:00" "2013-10-31" "1h" 463 }
+   puts {jplexpect <jplname> <start datetime> <end datetime> <timestep> <obscode>}
+   puts {}
+   puts {for location on earth: "g: ELong,NLat,ALT @399"}
+   puts {user coords requires three lines, example string.}
+   puts {coord@399\\r\\rg\\r254.20,40.19321,1.366}
+   exit
+}
+
+
+if { [llength $argv] < 2} { jplexpect_help }
+
 
 set filesuffix {_results.txt}
 
@@ -32,6 +51,9 @@ set center    [lindex $argv 4]
 set fileprefix [ regsub -all {[ ]+} $targetid {_} ]
 set filename  "$fileprefix$filesuffix"
 set targetid  "$targetid;"
+set gao       "coord@399|g|254.20,40.19321,1.366"
+
+# coord@399\r\rg\r254.20,40.19321,1.366
 
 
 # The 'o' observer quantites require quite a few answers
@@ -44,7 +66,7 @@ set targetid  "$targetid;"
 # get the astrometric and apparent ra, apparent az/el, local sidereal
 # time, observer range (repress rate), and the apparent hour angle.
 # 2,4,7,20,42
-set center            463
+
 set tablequantities   {[2,4,7,20,42]}
 set tzcorrection      {0:00}
 set timeformat        {BOTH}
@@ -116,11 +138,31 @@ expect {
    -re ".*Select.*$"                        { send --   e\r }
 }
 expect -re ".*Observe.*$"                       { send --   o\r };                  # o
-expect -re ".*Coordinate.*$"                    { send --   $center\r };            # 463
-expect -re ".*Confirm selected station.*$"      { send --   y\r};                   # y
-expect -re ".*Starting.*$"                      { send --   $starttime\r };         # 2013-06-13  00:00
-expect -re ".*Ending.*$"                        { send --   $endtime\r };           # 2013-10-31
+if {[string match *|* $center] == 1} {
+# will need to split the $center string later, hardwire to test
+   puts ""
+   puts "center $center"
+   set parts     [split $center "|"]; # coord@399|g|254.20,40.19321,1.366
+   set ourbody   [lindex $parts 0];   # coord@399
+   set ourtype   [lindex $parts 1];   # g
+   set ourcoords [lindex $parts 2];   # 254.20,40.19321,1.366
+   puts "ourbody $ourbody"
+   puts "ourtype $ourtype"
+   puts "ourcoords $ourcoords"
+   puts ""
+   expect -re ".*Coordinate center.*$"       { send -- $ourbody\r };                # coord@399
+   expect -re ".*Cylindrical or Geodetic.*$" { send -- $ourtype\r };                # g
+   expect -re ".*Specify geodetic.*$"        { send -- $ourcoords\r};               # 254.20,40.19321,1.366
+} else {
+   expect -re ".*Coordinate.*$"                    { send --   $center\r };         # 463
+   expect -re ".*Confirm selected station.*$"      { send --   y\r};                # y
+}
+
+expect -re ".*Starting.*$"                      { send --   $starttime\r };         # 2017-08-31 00:00
+expect -re ".*Ending.*$"                        { send --   $endtime\r };           # 2017-09-02
 expect -re ".*interval.*$"                      { send --   $stepsize\r };          # 1h
+
+# answer no to accept to put in what we want
 expect -re ".*Accept default output.*$"         { send --   n\r };                  # n
 expect -re ".*Select table quantities.*$"       { send --   $tablequantities\r };   # [2,4,7,20,42]
 expect -re ".*reference.*$"                     { send --   J2000\r };              # J2000
@@ -135,7 +177,7 @@ expect -re ".*Suppress RANGE_RATE output.*$"    { send --   $suppressrangerate\r
 expect -re ".*Minimum elevation.*$"             { send --   $minimumelevation\r };  # -90
 expect -re ".*Maximum air-mass.*$"              { send --   $maximumairmass\r };    # 38
 expect -re ".*Print rise-transit-set only.*$"   { send --   $risetransitset\r };    # N
-expect -re ".*Skip printout during daylight.*$" { send --   $skipdaylight\r };      # Y
+expect -re ".*Skip printout during daylight.*$" { send --   $skipdaylight\r };      # N
 expect -re ".*Solar elongation cut-off.*$"      { send --   $solarcutoff\r };       # [0,180]
 expect -re ".*Local Hour Angle cut-off.*$"      { send --   $localhourangle\r };    # [0-12]
 expect -re ".*RA/DC angular rate cut-off.*$"    { send --   1000\r };               # 1000
